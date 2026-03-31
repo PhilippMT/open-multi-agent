@@ -1,0 +1,364 @@
+/**
+ * @fileoverview High-level Agent class for open-multi-agent.
+ *
+ * {@link Agent} is the primary interface most consumers interact with.
+ * It wraps {@link AgentRunner} with:
+ *  - Persistent conversation history (`prompt()`)
+ *  - Fresh-conversation semantics (`run()`)
+ *  - Streaming support (`stream()`)
+ *  - Dynamic tool registration at runtime
+ *  - Full lifecycle state tracking (`idle → running → completed | error`)
+ *
+ * @example
+ * ```ts
+ * const agent = new Agent({
+ *   name: 'researcher',
+ *   model: 'claude-opus-4-5',
+ *   systemPrompt: 'You are a rigorous research assistant.',
+ *   tools: ['web_search', 'read_file'],
+ * })
+ *
+ * const result = await agent.run('Summarise the last 3 IPCC reports.')
+ * console.log(result.output)
+ * ```
+ */
+
+import type {
+  AgentConfig,
+  AgentState,
+  AgentRunResult,
+  LLMMessage,
+  StreamEvent,
+  TokenUsage,
+  ToolUseContext,
+} from '../types.js'
+import type { ToolDefinition as FrameworkToolDefinition, ToolRegistry } from '../tool/framework.js'
+import type { ToolExecutor } from '../tool/executor.js'
+import { createAdapter } from '../llm/adapter.js'
+import { AgentRunner, type RunnerOptions, type RunOptions } from './runner.js'
+
+// ---------------------------------------------------------------------------
+// Internal helpers
+// ---------------------------------------------------------------------------
+
+const ZERO_USAGE: TokenUsage = { input_tokens: 0, output_tokens: 0 }
+
+function addUsage(a: TokenUsage, b: TokenUsage): TokenUsage {
+  return {
+    input_tokens: a.input_tokens + b.input_tokens,
+    output_tokens: a.output_tokens + b.output_tokens,
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Agent
+// ---------------------------------------------------------------------------
+
+/**
+ * High-level wrapper around {@link AgentRunner} that manages conversation
+ * history, state transitions, and tool lifecycle.
+ */
+export class Agent {
+  readonly name: string
+  readonly config: AgentConfig
+
+  private runner: AgentRunner | null = null
+  private state: AgentState
+  private readonly _toolRegistry: ToolRegistry
+  private readonly _toolExecutor: ToolExecutor
+  private messageHistory: LLMMessage[] = []
+
+  /**
+   * @param config       - Static configuration for this agent.
+   * @param toolRegistry - Registry used to resolve and manage tools.
+   * @param toolExecutor - Executor that dispatches tool calls.
+   *
+   * `toolRegistry` and `toolExecutor` are injected rather than instantiated
+   * internally so that teams of agents can share a single registry.
+   */
+  constructor(
+    config: AgentConfig,
+    toolRegistry: ToolRegistry,
+    toolExecutor: ToolExecutor,
+  ) {
+    this.name = config.name
+    this.config = config
+    this._toolRegistry = toolRegistry
+    this._toolExecutor = toolExecutor
+
+    this.state = {
+      status: 'idle',
+      messages: [],
+      tokenUsage: ZERO_USAGE,
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Initialisation (async, called lazily)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Lazily create the {@link AgentRunner}.
+   *
+   * The adapter is created asynchronously (it may lazy-import provider SDKs),
+   * so we defer construction until the first `run` / `prompt` / `stream` call.
+   */
+  private async getRunner(): Promise<AgentRunner> {
+    if (this.runner !== null) {
+      return this.runner
+    }
+
+    const provider = this.config.provider ?? 'anthropic'
+    const adapter = await createAdapter(provider)
+
+    const runnerOptions: RunnerOptions = {
+      model: this.config.model,
+      systemPrompt: this.config.systemPrompt,
+      maxTurns: this.config.maxTurns,
+      maxTokens: this.config.maxTokens,
+      temperature: this.config.temperature,
+      allowedTools: this.config.tools,
+      agentName: this.name,
+      agentRole: this.config.systemPrompt?.slice(0, 50) ?? 'assistant',
+    }
+
+    this.runner = new AgentRunner(
+      adapter,
+      this._toolRegistry,
+      this._toolExecutor,
+      runnerOptions,
+    )
+
+    return this.runner
+  }
+
+  // -------------------------------------------------------------------------
+  // Primary execution methods
+  // -------------------------------------------------------------------------
+
+  /**
+   * Run `prompt` in a fresh conversation (history is NOT used).
+   *
+   * Equivalent to constructing a brand-new messages array `[{ role:'user', … }]`
+   * and calling the runner once. The agent's persistent history is not modified.
+   *
+   * Use this for one-shot queries where past context is irrelevant.
+   */
+  async run(prompt: string): Promise<AgentRunResult> {
+    const messages: LLMMessage[] = [
+      { role: 'user', content: [{ type: 'text', text: prompt }] },
+    ]
+
+    return this.executeRun(messages)
+  }
+
+  /**
+   * Run `prompt` as part of the ongoing conversation.
+   *
+   * Appends the user message to the persistent history, runs the agent, then
+   * appends the resulting messages to the history for the next call.
+   *
+   * Use this for multi-turn interactions.
+   */
+  async prompt(message: string): Promise<AgentRunResult> {
+    const userMessage: LLMMessage = {
+      role: 'user',
+      content: [{ type: 'text', text: message }],
+    }
+
+    this.messageHistory.push(userMessage)
+
+    const result = await this.executeRun([...this.messageHistory])
+
+    // Persist the new messages into history so the next `prompt` sees them.
+    for (const msg of result.messages) {
+      this.messageHistory.push(msg)
+    }
+
+    return result
+  }
+
+  /**
+   * Stream a fresh-conversation response, yielding {@link StreamEvent}s.
+   *
+   * Like {@link run}, this does not use or update the persistent history.
+   */
+  async *stream(prompt: string): AsyncGenerator<StreamEvent> {
+    const messages: LLMMessage[] = [
+      { role: 'user', content: [{ type: 'text', text: prompt }] },
+    ]
+
+    yield* this.executeStream(messages)
+  }
+
+  // -------------------------------------------------------------------------
+  // State management
+  // -------------------------------------------------------------------------
+
+  /** Return a snapshot of the current agent state (does not clone nested objects). */
+  getState(): AgentState {
+    return { ...this.state, messages: [...this.state.messages] }
+  }
+
+  /** Return a copy of the persistent message history. */
+  getHistory(): LLMMessage[] {
+    return [...this.messageHistory]
+  }
+
+  /**
+   * Clear the persistent conversation history and reset state to `idle`.
+   * Does NOT discard the runner instance — the adapter connection is reused.
+   */
+  reset(): void {
+    this.messageHistory = []
+    this.state = {
+      status: 'idle',
+      messages: [],
+      tokenUsage: ZERO_USAGE,
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Dynamic tool management
+  // -------------------------------------------------------------------------
+
+  /**
+   * Register a new tool with this agent's tool registry at runtime.
+   *
+   * The tool becomes available to the next LLM call — no restart required.
+   */
+  addTool(tool: FrameworkToolDefinition): void {
+    this._toolRegistry.register(tool)
+  }
+
+  /**
+   * Deregister a tool by name.
+   * If the tool is not registered this is a no-op (no error is thrown).
+   */
+  removeTool(name: string): void {
+    this._toolRegistry.deregister(name)
+  }
+
+  /** Return the names of all currently registered tools. */
+  getTools(): string[] {
+    return this._toolRegistry.list().map((t) => t.name)
+  }
+
+  // -------------------------------------------------------------------------
+  // Private execution core
+  // -------------------------------------------------------------------------
+
+  /**
+   * Shared execution path used by both `run` and `prompt`.
+   * Handles state transitions and error wrapping.
+   */
+  private async executeRun(messages: LLMMessage[]): Promise<AgentRunResult> {
+    this.transitionTo('running')
+
+    try {
+      const runner = await this.getRunner()
+      const runOptions: RunOptions = {
+        onMessage: msg => {
+          this.state.messages.push(msg)
+        },
+      }
+
+      const result = await runner.run(messages, runOptions)
+
+      this.state.tokenUsage = addUsage(this.state.tokenUsage, result.tokenUsage)
+      this.transitionTo('completed')
+
+      return this.toAgentRunResult(result, true)
+    } catch (err) {
+      const error = err instanceof Error ? err : new Error(String(err))
+      this.transitionToError(error)
+
+      return {
+        success: false,
+        output: error.message,
+        messages: [],
+        tokenUsage: ZERO_USAGE,
+        toolCalls: [],
+      }
+    }
+  }
+
+  /**
+   * Shared streaming path used by `stream`.
+   * Handles state transitions and error wrapping.
+   */
+  private async *executeStream(messages: LLMMessage[]): AsyncGenerator<StreamEvent> {
+    this.transitionTo('running')
+
+    try {
+      const runner = await this.getRunner()
+
+      for await (const event of runner.stream(messages)) {
+        if (event.type === 'done') {
+          const result = event.data as import('./runner.js').RunResult
+          this.state.tokenUsage = addUsage(this.state.tokenUsage, result.tokenUsage)
+          this.transitionTo('completed')
+        } else if (event.type === 'error') {
+          const error = event.data instanceof Error
+            ? event.data
+            : new Error(String(event.data))
+          this.transitionToError(error)
+        }
+
+        yield event
+      }
+    } catch (err) {
+      const error = err instanceof Error ? err : new Error(String(err))
+      this.transitionToError(error)
+      yield { type: 'error', data: error } satisfies StreamEvent
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // State transition helpers
+  // -------------------------------------------------------------------------
+
+  private transitionTo(status: 'idle' | 'running' | 'completed' | 'error'): void {
+    this.state = { ...this.state, status }
+  }
+
+  private transitionToError(error: Error): void {
+    this.state = { ...this.state, status: 'error', error }
+  }
+
+  // -------------------------------------------------------------------------
+  // Result mapping
+  // -------------------------------------------------------------------------
+
+  private toAgentRunResult(
+    result: import('./runner.js').RunResult,
+    success: boolean,
+  ): AgentRunResult {
+    return {
+      success,
+      output: result.output,
+      messages: result.messages,
+      tokenUsage: result.tokenUsage,
+      toolCalls: result.toolCalls,
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // ToolUseContext builder (for direct use by subclasses or advanced callers)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Build a {@link ToolUseContext} that identifies this agent.
+   * Exposed so team orchestrators can inject richer context (e.g. `TeamInfo`).
+   */
+  buildToolContext(abortSignal?: AbortSignal): ToolUseContext {
+    return {
+      agent: {
+        name: this.name,
+        role: this.config.systemPrompt?.slice(0, 60) ?? 'assistant',
+        model: this.config.model,
+      },
+      abortSignal,
+    }
+  }
+}
