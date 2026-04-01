@@ -15,7 +15,7 @@
  *   - `eu.amazon.nova-micro-v1:0`   — Amazon Nova Micro (text only, tool use)
  *   - `eu.amazon.nova-lite-v1:0`    — Amazon Nova Lite (multimodal, tool use)
  *   - `eu.amazon.nova-pro-v1:0`     — Amazon Nova Pro (multimodal, tool use)
- *   - `eu.amazon.nova-2-lite-v1:0`  — Amazon Nova 2 Lite
+ *   - `eu.amazon.nova-2-lite-v1:0`  — Amazon Nova 2 Lite (multimodal, tool use)
  *   - `eu.meta.llama3-2-1b-instruct-v1:0` — Meta Llama 3.2 1B (text, no tool use)
  *   - `eu.meta.llama3-2-3b-instruct-v1:0` — Meta Llama 3.2 3B (text, no tool use)
  *   - `eu.mistral.pixtral-large-2502-v1:0` — Mistral Pixtral Large (multimodal, tool use)

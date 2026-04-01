@@ -11,7 +11,7 @@
  *   - Environment variables (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`,
  *     `AWS_SESSION_TOKEN`, `AWS_REGION`)
  *
- * EU cross-region inference model IDs:
+ * EU cross-region inference model IDs (format varies per model release):
  *   - `eu.anthropic.claude-haiku-4-5-20251001-v1:0`
  *   - `eu.anthropic.claude-sonnet-4-5-20250929-v1:0`
  *   - `eu.anthropic.claude-sonnet-4-6`
