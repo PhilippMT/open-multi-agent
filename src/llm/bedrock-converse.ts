@@ -12,10 +12,10 @@
  *   - **DeepSeek**      — DeepSeek-R1 (reasoning), V3.1, V3.2
  *   - **NVIDIA**        — Nemotron Nano 9B v2, 12B v2 VL, Nano 3 30B
  *   - **Moonshot AI**   — Kimi K2.5 (vision), Kimi K2 Thinking (reasoning)
- *   - **MiniMax**       — MiniMax M2, M2.1
+ *   - **MiniMax**       — MiniMax M2, M2.1, M2.5
  *   - **Qwen**          — Qwen3 32B, 235B, Coder 30B/480B/Next, Next 80B,
  *                          VL 235B (vision)
- *   - **Z.AI**          — GLM 4.7, GLM 4.7 Flash
+ *   - **Z.AI**          — GLM 4.7, GLM 4.7 Flash, GLM 5
  *   - **Google**        — Gemma 3 4B/12B/27B
  *   - **OpenAI (OSS)**  — gpt-oss-20b, gpt-oss-120b, Safeguard 20B/120B
  *
@@ -48,12 +48,15 @@
  *   MiniMax (eu-central-1, eu-north-1, eu-south-1, eu-west-1, eu-west-2):
  *   - `minimax.minimax-m2`           — text only
  *   - `minimax.minimax-m2.1`         — text only
+ *   - `minimax.minimax-m2.5`         — text only, tool use (agent-native, 1M context)
  *
  *   Qwen (various EU regions):
  *   - `qwen.qwen3-32b-v1:0`               — text only, tool use
  *   - `qwen.qwen3-235b-a22b-2507-v1:0`    — text only, tool use
- *   - `qwen.qwen3-coder-30b-a3b-v1:0`     — text only (code)
- *   - `qwen.qwen3-coder-480b-a35b-v1:0`   — text only (code)
+ *   - `qwen.qwen3-coder-30b-a3b-v1:0`     — Qwen3-Coder-30B-A3B-Instruct (code)
+ *     (bedrock-mantle ID: `qwen.qwen3-coder-30b-a3b-instruct`)
+ *   - `qwen.qwen3-coder-480b-a35b-v1:0`   — Qwen3 Coder 480B A35B Instruct (code)
+ *     (bedrock-mantle ID: `qwen.qwen3-coder-480b-a35b-instruct`)
  *   - `qwen.qwen3-coder-next`             — text only (code)
  *   - `qwen.qwen3-next-80b-a3b`           — text only
  *   - `qwen.qwen3-vl-235b-a22b`           — vision + text
@@ -66,15 +69,19 @@
  *   - `zai.glm-4.7`                  — text only
  *   - `zai.glm-4.7-flash`            — text only
  *
+ *   Z.AI GLM 5 (eu-north-1, eu-west-2):
+ *   - `zai.glm-5`                    — text only, tool use (744B params / 40B active, 200K context)
+ *
  * Model-specific notes:
  *   - **Reasoning models** (DeepSeek-R1, Kimi K2 Thinking) return
  *     `reasoningContent` blocks in Converse API responses.  These are surfaced
  *     as `TextBlock`s with a `<thinking>…</thinking>` wrapper so downstream
  *     consumers can distinguish reasoning traces from final output.
- *   - **Tool use** is supported natively by Kimi K2.5, Qwen3 (non-Coder),
- *     and most Mistral / Nova / Llama models via the Converse API `toolConfig`
- *     parameter.  Models that lack tool support (e.g. Nemotron, MiniMax,
- *     DeepSeek, Gemma) will ignore `toolConfig` and should not be passed tools.
+ *   - **Tool use** is supported natively by Kimi K2.5, MiniMax M2.5, GLM 5,
+ *     Qwen3 (non-Coder), and most Mistral / Nova / Llama models via the
+ *     Converse API `toolConfig` parameter.  Models that lack tool support
+ *     (e.g. Nemotron, MiniMax M2/M2.1, DeepSeek, Gemma) will ignore
+ *     `toolConfig` and should not be passed tools.
  *
  * @example
  * ```ts
