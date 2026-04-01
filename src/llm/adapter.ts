@@ -9,8 +9,10 @@
  * ```ts
  * import { createAdapter } from './adapter.js'
  *
- * const anthropic = createAdapter('anthropic')
- * const openai    = createAdapter('openai', process.env.OPENAI_API_KEY)
+ * const anthropic        = createAdapter('anthropic')
+ * const openai           = createAdapter('openai', process.env.OPENAI_API_KEY)
+ * const bedrockAnthropic = createAdapter('bedrock-anthropic')
+ * const bedrockConverse  = createAdapter('bedrock-converse')
  * ```
  */
 
@@ -37,7 +39,7 @@ import type { LLMAdapter } from '../types.js'
  * Additional providers can be integrated by implementing {@link LLMAdapter}
  * directly and bypassing this factory.
  */
-export type SupportedProvider = 'anthropic' | 'openai'
+export type SupportedProvider = 'anthropic' | 'openai' | 'bedrock-anthropic' | 'bedrock-converse'
 
 /**
  * Instantiate the appropriate {@link LLMAdapter} for the given provider.
@@ -45,11 +47,15 @@ export type SupportedProvider = 'anthropic' | 'openai'
  * API keys fall back to the standard environment variables
  * (`ANTHROPIC_API_KEY` / `OPENAI_API_KEY`) when not supplied explicitly.
  *
+ * For Bedrock providers, AWS credentials are resolved through the standard AWS
+ * credential chain (environment variables, IAM roles, etc.).
+ *
  * Adapters are imported lazily so that projects using only one provider
  * are not forced to install the SDK for the other.
  *
  * @param provider - Which LLM provider to target.
  * @param apiKey   - Optional API key override; falls back to env var.
+ *                   Ignored for Bedrock providers.
  * @throws {Error} When the provider string is not recognised.
  */
 export async function createAdapter(
@@ -64,6 +70,14 @@ export async function createAdapter(
     case 'openai': {
       const { OpenAIAdapter } = await import('./openai.js')
       return new OpenAIAdapter(apiKey)
+    }
+    case 'bedrock-anthropic': {
+      const { BedrockAnthropicAdapter } = await import('./bedrock-anthropic.js')
+      return new BedrockAnthropicAdapter()
+    }
+    case 'bedrock-converse': {
+      const { BedrockConverseAdapter } = await import('./bedrock-converse.js')
+      return new BedrockConverseAdapter()
     }
     default: {
       // The `never` cast here makes TypeScript enforce exhaustiveness.
