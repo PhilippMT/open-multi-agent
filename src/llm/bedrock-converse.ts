@@ -3,7 +3,21 @@
  *
  * Uses the unified Converse / ConverseStream API from the AWS SDK to provide a
  * single adapter for all non-Anthropic models available through Amazon Bedrock.
- * This includes Amazon Nova, Meta Llama, and Mistral families.
+ * This covers the following model families:
+ *
+ *   - **Amazon Nova**   — Nova Micro, Lite, Pro, 2 Lite, Premier
+ *   - **Meta Llama**    — Llama 3 / 3.1 / 3.2 / 3.3 / 4 Maverick / 4 Scout
+ *   - **Mistral AI**    — Mistral 7B, Large, Small, Pixtral Large, Ministral,
+ *                          Devstral, Magistral, Voxtral
+ *   - **DeepSeek**      — DeepSeek-R1 (reasoning), V3.1, V3.2
+ *   - **NVIDIA**        — Nemotron Nano 9B v2, 12B v2 VL, Nano 3 30B
+ *   - **Moonshot AI**   — Kimi K2.5 (vision), Kimi K2 Thinking (reasoning)
+ *   - **MiniMax**       — MiniMax M2, M2.1
+ *   - **Qwen**          — Qwen3 32B, 235B, Coder 30B/480B/Next, Next 80B,
+ *                          VL 235B (vision)
+ *   - **Z.AI**          — GLM 4.7, GLM 4.7 Flash
+ *   - **Google**        — Gemma 3 4B/12B/27B
+ *   - **OpenAI (OSS)**  — gpt-oss-20b, gpt-oss-120b, Safeguard 20B/120B
  *
  * Credential resolution order (standard AWS credential chain):
  *   - Explicit constructor options (`awsAccessKeyId`, `awsSecretAccessKey`, etc.)
@@ -11,7 +25,7 @@
  *     `AWS_SESSION_TOKEN`, `AWS_REGION`)
  *   - IAM role credentials (EC2 instance profile, ECS task role, etc.)
  *
- * EU cross-region inference model IDs (text / chat):
+ * EU cross-region inference model IDs (text / chat, `eu.` prefix):
  *   - `eu.amazon.nova-micro-v1:0`   — Amazon Nova Micro (text only, tool use)
  *   - `eu.amazon.nova-lite-v1:0`    — Amazon Nova Lite (multimodal, tool use)
  *   - `eu.amazon.nova-pro-v1:0`     — Amazon Nova Pro (multimodal, tool use)
@@ -19,6 +33,48 @@
  *   - `eu.meta.llama3-2-1b-instruct-v1:0` — Meta Llama 3.2 1B (text, no tool use)
  *   - `eu.meta.llama3-2-3b-instruct-v1:0` — Meta Llama 3.2 3B (text, no tool use)
  *   - `eu.mistral.pixtral-large-2502-v1:0` — Mistral Pixtral Large (multimodal, tool use)
+ *
+ * EU single-region model IDs (no cross-region inference profile — use the
+ * region-specific model ID directly and deploy to the appropriate EU region):
+ *
+ *   NVIDIA Nemotron (eu-south-1, eu-west-1, eu-west-2):
+ *   - `nvidia.nemotron-nano-9b-v2`   — text only
+ *   - `nvidia.nemotron-nano-12b-v2`  — vision + text
+ *   - `nvidia.nemotron-nano-3-30b`   — text only
+ *
+ *   Moonshot AI Kimi (eu-north-1, eu-west-2):
+ *   - `moonshotai.kimi-k2.5`         — vision + text, tool use
+ *
+ *   MiniMax (eu-central-1, eu-north-1, eu-south-1, eu-west-1, eu-west-2):
+ *   - `minimax.minimax-m2`           — text only
+ *   - `minimax.minimax-m2.1`         — text only
+ *
+ *   Qwen (various EU regions):
+ *   - `qwen.qwen3-32b-v1:0`               — text only, tool use
+ *   - `qwen.qwen3-235b-a22b-2507-v1:0`    — text only, tool use
+ *   - `qwen.qwen3-coder-30b-a3b-v1:0`     — text only (code)
+ *   - `qwen.qwen3-coder-480b-a35b-v1:0`   — text only (code)
+ *   - `qwen.qwen3-coder-next`             — text only (code)
+ *   - `qwen.qwen3-next-80b-a3b`           — text only
+ *   - `qwen.qwen3-vl-235b-a22b`           — vision + text
+ *
+ *   DeepSeek (eu-north-1, eu-west-2):
+ *   - `deepseek.v3-v1:0`             — text only
+ *   - `deepseek.v3.2`                — text only
+ *
+ *   Z.AI GLM (eu-central-1, eu-north-1, eu-south-1, eu-west-1, eu-west-2):
+ *   - `zai.glm-4.7`                  — text only
+ *   - `zai.glm-4.7-flash`            — text only
+ *
+ * Model-specific notes:
+ *   - **Reasoning models** (DeepSeek-R1, Kimi K2 Thinking) return
+ *     `reasoningContent` blocks in Converse API responses.  These are surfaced
+ *     as `TextBlock`s with a `<thinking>…</thinking>` wrapper so downstream
+ *     consumers can distinguish reasoning traces from final output.
+ *   - **Tool use** is supported natively by Kimi K2.5, Qwen3 (non-Coder),
+ *     and most Mistral / Nova / Llama models via the Converse API `toolConfig`
+ *     parameter.  Models that lack tool support (e.g. Nemotron, MiniMax,
+ *     DeepSeek, Gemma) will ignore `toolConfig` and should not be passed tools.
  *
  * @example
  * ```ts
@@ -168,6 +224,11 @@ function toBedrockSystem(systemPrompt?: string): BedrockSystemContentBlock[] | u
 /**
  * Convert a Bedrock `ContentBlock` from the Converse response into a
  * framework {@link ContentBlock}.
+ *
+ * Reasoning models (DeepSeek-R1, Kimi K2 Thinking) may return
+ * `reasoningContent` blocks containing chain-of-thought traces.  These are
+ * surfaced as `TextBlock`s wrapped in `<thinking>…</thinking>` tags so that
+ * downstream consumers can parse or strip them as needed.
  */
 function fromBedrockContentBlock(block: BedrockContentBlock): ContentBlock | null {
   if ('text' in block && block.text !== undefined) {
@@ -183,7 +244,19 @@ function fromBedrockContentBlock(block: BedrockContentBlock): ContentBlock | nul
     }
     return toolUse
   }
-  // Graceful degradation for content types we don't model (reasoning, etc.)
+  // Reasoning models (e.g. DeepSeek-R1, Kimi K2 Thinking) emit
+  // `reasoningContent` blocks with the model's chain-of-thought trace.
+  if ('reasoningContent' in block && block.reasoningContent !== undefined) {
+    const reasoning = block.reasoningContent as { text?: string }
+    if (reasoning.text) {
+      const text: TextBlock = {
+        type: 'text',
+        text: `<thinking>${reasoning.text}</thinking>`,
+      }
+      return text
+    }
+  }
+  // Graceful degradation for content types we don't yet model.
   return null
 }
 
@@ -257,7 +330,13 @@ function generateResponseId(): string {
  * LLM adapter backed by the AWS Bedrock Converse API.
  *
  * Supports all models on Amazon Bedrock that expose the Converse / ConverseStream
- * interface, including Amazon Nova, Meta Llama, and Mistral families.
+ * interface, including Amazon Nova, Meta Llama, Mistral, DeepSeek, NVIDIA
+ * Nemotron, Moonshot AI Kimi, MiniMax, Qwen, Z.AI GLM, Google Gemma, and
+ * OpenAI gpt-oss families.
+ *
+ * **Reasoning models** (DeepSeek-R1, Kimi K2 Thinking) emit chain-of-thought
+ * traces as `<thinking>…</thinking>` wrapped text blocks so that callers can
+ * distinguish reasoning from final output.
  *
  * Thread-safe — a single instance may be shared across concurrent agent runs.
  */
@@ -390,6 +469,7 @@ export class BedrockConverseAdapter implements LLMAdapter {
       { id: string; name: string; json: string }
     >()
     const textBuffers = new Map<number, string>()
+    const reasoningBuffers = new Map<number, string>()
     const allContent: ContentBlock[] = []
     let stopReason: string | undefined
     let inputTokens = 0
@@ -429,6 +509,16 @@ export class BedrockConverseAdapter implements LLMAdapter {
               if (buf !== undefined) {
                 buf.json += delta.toolUse.input ?? ''
               }
+            } else if ('reasoningContent' in delta && delta.reasoningContent) {
+              // Reasoning models (DeepSeek-R1, Kimi K2 Thinking) stream
+              // chain-of-thought traces as reasoningContent deltas.
+              const rc = delta.reasoningContent as { text?: string }
+              if (rc.text) {
+                const existing = reasoningBuffers.get(idx) ?? ''
+                reasoningBuffers.set(idx, existing + rc.text)
+                const textEvent: StreamEvent = { type: 'text', data: rc.text }
+                yield textEvent
+              }
             }
           }
         }
@@ -436,6 +526,16 @@ export class BedrockConverseAdapter implements LLMAdapter {
         // --- content_block_stop ---
         if ('contentBlockStop' in event && event.contentBlockStop) {
           const idx = event.contentBlockStop.contentBlockIndex ?? 0
+
+          // Finalise reasoning blocks (thinking models)
+          const reasoningBuf = reasoningBuffers.get(idx)
+          if (reasoningBuf !== undefined) {
+            allContent.push({
+              type: 'text',
+              text: `<thinking>${reasoningBuf}</thinking>`,
+            })
+            reasoningBuffers.delete(idx)
+          }
 
           // Finalise text blocks
           const textBuf = textBuffers.get(idx)
