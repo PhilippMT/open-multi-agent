@@ -2,7 +2,7 @@
 
 构建能自动拆解目标的 AI 智能体团队。定义智能体的角色和工具，描述一个目标——框架自动规划任务图、调度依赖、并行执行。
 
-3 个运行时依赖，20 个源文件，一次 `runTeam()` 调用从目标到结果。
+3 个运行时依赖，27 个源文件，一次 `runTeam()` 调用从目标到结果。
 
 [![GitHub stars](https://img.shields.io/github/stars/JackChen-me/open-multi-agent)](https://github.com/JackChen-me/open-multi-agent/stargazers)
 [![license](https://img.shields.io/github/license/JackChen-me/open-multi-agent)](./LICENSE)
